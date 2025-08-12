@@ -2,7 +2,7 @@ This repository contains a script to detect potentially suspicious unsigned proc
 
 ## Overview
 
-The `Detect-Unsigned-Processes.sh` script scans running processes through the `/proc` filesystem, identifying processes that either:
+The `Detect-unsigned-Processes.sh` script scans running processes through the `/proc` filesystem, identifying processes that either:
 - Have missing executable files
 - Are running from temporary directories (/tmp, /var/tmp, /dev/shm)
 
@@ -22,7 +22,7 @@ The script provides standardized logging and JSON output suitable for integratio
 
 ### Command Line Execution
 
-./Detect-Unsigned-Processes.sh
+./Detect-unsigned-Processes.sh
 
 Environment Variables
 Variable	Description
@@ -207,7 +207,7 @@ Debug Mode
 Enable verbose logging to see detailed scan information:
 bash
 
-VERBOSE=1 ./Detect-Unsigned-Processes.sh
+VERBOSE=1 ./Detect-unsigned-Processes.sh
 
 License
 
