@@ -1,22 +1,19 @@
 #!/bin/sh
 set -eu
+
 ScriptName="Detect-Unsigned-Processes"
 LogPath="/tmp/${ScriptName}-script.log"
-ARLog="/var/ossec/active-response/active-responses.log"
+ARLog="/var/ossec/logs/active-responses.log"
 LogMaxKB=100
 LogKeep=5
 HostName="$(hostname)"
 runStart=$(date +%s)
+
 WriteLog() {
   Message="$1"; Level="${2:-INFO}"
   ts="$(date '+%Y-%m-%d %H:%M:%S')"
   line="[$ts][$Level] $Message"
-  case "$Level" in
-    ERROR) printf '\033[31m%s\033[0m\n' "$line" >&2 ;;
-    WARN)  printf '\033[33m%s\033[0m\n' "$line" >&2 ;;
-    DEBUG) [ "${VERBOSE:-0}" -eq 1 ] && printf '%s\n' "$line" >&2 ;;
-    *)     printf '%s\n' "$line" >&2 ;;
-  esac
+  printf '%s\n' "$line" >&2
   printf '%s\n' "$line" >> "$LogPath"
 }
 
@@ -32,60 +29,98 @@ RotateLog() {
   mv -f "$LogPath" "$LogPath.1"
 }
 
-escape_json() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+iso_now() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+escape_json() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+BeginNDJSON() { TMP_AR="$(mktemp)"; }
+AddRecord() {
+  ts="$(iso_now)"
+  pid_num="$1"; cmd="$2"; exe="$3"; reason="$4"; user="$5"
+  case "$pid_num" in ''|*[!0-9]*) pid_num=0 ;; esac
+  printf '{"timestamp":"%s","host":"%s","action":"%s","copilot_action":true,"pid":%s,"user":"%s","cmd":"%s","exe":"%s","reason":"%s"}\n' \
+    "$ts" "$HostName" "$ScriptName" \
+    "$pid_num" \
+    "$(escape_json "$user")" "$(escape_json "$cmd")" "$(escape_json "$exe")" "$(escape_json "$reason")" \
+    >> "$TMP_AR"
 }
+AddStatus() {
+  ts="$(iso_now)"; st="${1:-info}"; msg="$(escape_json "${2:-}")"
+  printf '{"timestamp":"%s","host":"%s","action":"%s","copilot_action":true,"status":"%s","message":"%s"}\n' \
+    "$ts" "$HostName" "$ScriptName" "$st" "$msg" >> "$TMP_AR"
+}
+
+CommitNDJSON() {
+  [ -s "$TMP_AR" ] || AddStatus "no_results" "no suspicious/unsigned processes found"
+  AR_DIR="$(dirname "$ARLog")"
+  [ -d "$AR_DIR" ] || WriteLog "Directory missing: $AR_DIR (will attempt write anyway)" WARN
+  if mv -f "$TMP_AR" "$ARLog"; then
+    WriteLog "Wrote NDJSON to $ARLog" INFO
+  else
+    WriteLog "Primary write FAILED to $ARLog" WARN
+    if mv -f "$TMP_AR" "$ARLog.new"; then
+      WriteLog "Wrote NDJSON to $ARLog.new (fallback)" WARN
+    else
+      keep="/tmp/active-responses.$$.ndjson"
+      cp -f "$TMP_AR" "$keep" 2>/dev/null || true
+      WriteLog "Failed to write both $ARLog and $ARLog.new; saved $keep" ERROR
+      rm -f "$TMP_AR" 2>/dev/null || true
+      exit 1
+    fi
+  fi
+  for p in "$ARLog" "$ARLog.new"; do
+    if [ -f "$p" ]; then
+      sz=$(wc -c < "$p" 2>/dev/null || echo 0)
+      ino=$(ls -li "$p" 2>/dev/null | awk '{print $1}')
+      head1=$(head -n1 "$p" 2>/dev/null || true)
+      WriteLog "VERIFY: path=$p inode=$ino size=${sz}B first_line=${head1:-<empty>}" INFO
+    fi
+  done
+}
+
 RotateLog
+WriteLog "=== SCRIPT START : $ScriptName (host=$HostName) ==="
+BeginNDJSON
+WriteLog "Scanning /proc for suspicious/unsigned processes..." INFO
 
-if ! rm -f "$ARLog" 2>/dev/null; then
-  WriteLog "Failed to clear $ARLog (might be locked)" WARN
-else
-  : > "$ARLog"
-  WriteLog "Active response log cleared for fresh run." INFO
-fi
+# Rules:
+# 1) Executable missing (no /proc/PID/exe or not a file)
+# 2) Executable path under temp dirs: /tmp, /var/tmp, /dev/shm
+emitted=0
 
-WriteLog "=== SCRIPT START : $ScriptName ==="
-WriteLog "Collecting running processes via /proc..." INFO
-
-process_json_list=""
 for pid_dir in /proc/[0-9]*; do
-    pid="${pid_dir#/proc/}"
-    [ ! -r "$pid_dir/cmdline" ] && continue
-    cmd=$(tr '\0' ' ' < "$pid_dir/cmdline" 2>/dev/null | sed 's/^ *//;s/ *$//') || cmd=""
-    [ -z "$cmd" ] && continue
+  [ -d "$pid_dir" ] || continue
+  pid="${pid_dir#/proc/}"
 
-    exe_path="$(readlink -f "$pid_dir/exe" 2>/dev/null || echo '')"
+  cmdline_raw="$(tr '\0' ' ' < "$pid_dir/cmdline" 2>/dev/null || true)"
+  [ -n "$cmdline_raw" ] || continue
+  cmd="${cmdline_raw% }"
 
-    suspicious=0
-    reason=""
-    if [ -z "$exe_path" ] || [ ! -f "$exe_path" ]; then
-        suspicious=1
-        reason="Executable missing"
-    elif echo "$exe_path" | grep -Eq '^(/tmp|/var/tmp|/dev/shm)'; then
-        suspicious=1
-        reason="Executable in temp directory"
-    fi
+  exe_path=""
+  if [ -L "$pid_dir/exe" ]; then
+    resolved="$(readlink -f "$pid_dir/exe" 2>/dev/null || true)"
+    [ -n "$resolved" ] && exe_path="$resolved"
+  fi
 
-    if [ "$suspicious" -eq 1 ]; then
-        escaped_cmd=$(escape_json "$cmd")
-        escaped_exe=$(escape_json "$exe_path")
-        escaped_reason=$(escape_json "$reason")
-        item="{\"pid\":$pid,\"cmd\":\"$escaped_cmd\",\"exe\":\"$escaped_exe\",\"reason\":\"$escaped_reason\"}"
-        [ -z "$process_json_list" ] && process_json_list="$item" || process_json_list="$process_json_list,$item"
-    fi
+  suspicious=0
+  reason=""
+  if [ -z "$exe_path" ] || [ ! -f "$exe_path" ]; then
+    suspicious=1
+    reason="Executable missing"
+  elif printf '%s' "$exe_path" | grep -Eq '^(/tmp|/var/tmp|/dev/shm)(/|$)'; then
+    suspicious=1
+    reason="Executable in temp directory"
+  fi
+
+  if [ "$suspicious" -eq 1 ]; then
+    owner="$(stat -c '%U' "$pid_dir" 2>/dev/null || echo "unknown")"
+    AddRecord "$pid" "$cmd" "${exe_path:-}" "$reason" "$owner"
+    emitted=$((emitted+1))
+  fi
 done
 
-[ -n "$process_json_list" ] && process_json_list="[$process_json_list]" || process_json_list="[]"
+[ "$emitted" -gt 0 ] || AddStatus "no_results" "no suspicious/unsigned processes found"
 
-ts=$(date --iso-8601=seconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')
-final_json="{\"timestamp\":\"$ts\",\"host\":\"$HostName\",\"action\":\"$ScriptName\",\"data\":$process_json_list,\"copilot_action\":true}"
+CommitNDJSON
 
-tmpfile=$(mktemp)
-printf '%s\n' "$final_json" > "$tmpfile"
-if ! mv -f "$tmpfile" "$ARLog" 2>/dev/null; then
-  mv -f "$tmpfile" "$ARLog.new"
-fi
-
-WriteLog "JSON result written to $ARLog" INFO
 dur=$(( $(date +%s) - runStart ))
-WriteLog "=== SCRIPT END : duration ${dur}s ==="
+WriteLog "=== SCRIPT END : ${dur}s ==="
