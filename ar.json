@@ -3,37 +3,7 @@
   "description": "Scans running processes on Linux and detects potentially unsigned or suspicious executables. Flags processes with missing binaries or executables located in non-standard temporary directories (/tmp, /var/tmp, /dev/shm). Produces structured NDJSON output containing PID, command, executable path, and reason for flagging. Writes results atomically to the Active Response log with .new fallback if locked.",
   "technology": "Linux",
   "icon": "linux",
-  "script_parameters": [
-    {
-      "name": "ARLog",
-      "type": "string",
-      "required": false,
-      "description": "Active Response NDJSON output path (atomic overwrite; falls back to .new if locked).",
-      "default": "/var/ossec/active-response/active-responses.log"
-    },
-    {
-      "name": "LogPath",
-      "type": "string",
-      "required": false,
-      "description": "Path to the rotating human-readable script log.",
-      "default": "/tmp/Detect-Unsigned-Processes-script.log"
-    },
-    {
-      "name": "LogMaxKB",
-      "type": "integer",
-      "required": false,
-      "description": "Maximum size of the log file (KB) before rotation.",
-      "default": 100
-    },
-    {
-      "name": "LogKeep",
-      "type": "integer",
-      "required": false,
-      "description": "Number of rotated log files to keep.",
-      "default": 5
-    }
-  ],
-  "repo_url": "https://raw.githubusercontent.com/socfortress/LINUX-DETECT-UNSIGNED-PROCESSES-COPILOT-ACTION/refs/heads/main/",
+  "repo_url": "https://raw.githubusercontent.com/socfortress/LINUX-DETECT-UNSIGNED-PROCESSES-COPILOT-ACTION/refs/heads/main/Detect-unsigned-Processes.sh",
   "script_name": "Detect-unsigned-Processes.sh",
   "version": "1.0.0",
   "last_updated": "2025-08-23T00:00:00Z"
